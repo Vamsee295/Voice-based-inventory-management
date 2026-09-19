@@ -23,15 +23,21 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
 
+      let data: any = {};
+      try {
+        data = await res.json();
+      } catch {
+        data = { error: 'Server error: Unable to parse response' };
+      }
+
       if (!res.ok) {
-        const data = await res.json();
         throw new Error(data.error || 'Login failed');
       }
 
       router.push('/inventory');
       router.refresh();
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || 'An unexpected error occurred');
     } finally {
       setLoading(false);
     }

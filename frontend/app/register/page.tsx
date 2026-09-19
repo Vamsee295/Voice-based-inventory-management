@@ -28,8 +28,14 @@ export default function RegisterPage() {
         body: JSON.stringify(formData),
       });
 
+      let data: any = {};
+      try {
+        data = await res.json();
+      } catch {
+        data = { error: 'Registration server error' };
+      }
+
       if (!res.ok) {
-        const data = await res.json();
         throw new Error(data.error || 'Registration failed');
       }
 
@@ -40,8 +46,15 @@ export default function RegisterPage() {
         body: JSON.stringify({ email: formData.email, password: formData.password }),
       });
       
+      let loginData: any = {};
+      try {
+        loginData = await loginRes.json();
+      } catch {
+        loginData = {};
+      }
+
       if (!loginRes.ok) {
-        throw new Error('Registered, but auto-login failed. Please login manually.');
+        throw new Error(loginData.error || 'Registered, but auto-login failed. Please login manually.');
       }
 
       router.push('/inventory');
