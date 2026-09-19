@@ -14,10 +14,12 @@ AI Safety Contract:
   - /confirm is the ONLY mutation — always via InventoryService
 """
 import logging
+import time
 import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -27,7 +29,9 @@ from app.services import rag_service
 from app.services.inventory_service import inventory_service
 from app.repositories.product_repository import product_repo
 from app.repositories.inventory_repository import inventory_repo
+from app.models.product import Product
 from app.models.trade_unit import TradeUnit
+from app.models.knowledge_document import KnowledgeDocument
 from app.schemas.voice import (
     TranscribeResponse,
     InterpretRequest,
@@ -120,25 +124,31 @@ async def interpret_command(
     if not text:
         raise HTTPException(status_code=400, detail="Empty command text.")
 
-    logger.info(f"[voice/interpret] '{text[:80]}' (business={business_id})")
+    t_start = time.time()
+    logger.info(f"[voice/interpret] started for '{text[:80]}' (business={business_id})")
 
     # RAG context retrieval
     rag_context = ""
     try:
+        t_rag_start = time.time()
         rag_context = rag_service.retrieve_context(
             db=db,
             business_id=business_id,
             query=text,
             top_k=5,
         )
+        t_rag = time.time() - t_rag_start
         if rag_context:
-            logger.debug(f"RAG context retrieved ({len(rag_context)} chars)")
+            logger.info(f"[voice/interpret] RAG context retrieved ({len(rag_context)} chars in {t_rag:.3f}s)")
     except Exception as e:
-        logger.warning(f"RAG retrieval failed (non-fatal): {e}")
+        logger.warning(f"[voice/interpret] RAG retrieval failed (non-fatal): {e}")
 
     # Groq LLM extraction
     try:
+        t_groq_start = time.time()
         raw = groq_client.extract_command(text, rag_context=rag_context)
+        t_groq = time.time() - t_groq_start
+        logger.info(f"[voice/interpret] Groq extraction finished in {t_groq:.3f}s, total={time.time()-t_start:.3f}s")
         cmd = StructuredCommand(
             intent=raw.get("intent", "UNKNOWN"),
             product_query=raw.get("product_query"),
@@ -235,10 +245,17 @@ async def preview_command(
         )
 
     # Product resolution (deterministic — LLM provides a query, DB resolves)
-    product = _resolve_product(db, business_id, cmd.product_query)
-    if isinstance(product, PreviewResponse):
-        product.operation_id = operation_id
-        return product
+    product = None
+    if request.product_id:
+        product = product_repo.get(db, id=request.product_id)
+        if product:
+            logger.info(f"[voice/preview] Using explicitly selected product_id={request.product_id} ('{product.name}')")
+
+    if not product:
+        product = _resolve_product(db, business_id, cmd.product_query)
+        if isinstance(product, PreviewResponse):
+            product.operation_id = operation_id
+            return product
 
     # TUNE — Trade Unit Normalization (deterministic from DB config)
     normalized_qty, tune_note = _apply_tune(db, product, cmd.quantity, cmd.unit)
@@ -369,7 +386,11 @@ async def confirm_command(
 def _resolve_product(db: Session, business_id: str, query: str):
     """
     Resolve product_query to a Product ORM object.
-    Returns Product or PreviewResponse (error).
+    Resolution order:
+      1. Exact match on SKU, Name, or GTIN
+      2. Product Alias knowledge base match (e.g. 'rice' / 'biyyam' -> Sona Masoori Rice)
+      3. Business-scoped product search
+      4. Ambiguous candidates list
     """
     if not query:
         return PreviewResponse(
@@ -378,7 +399,44 @@ def _resolve_product(db: Session, business_id: str, query: str):
             message="Product name is missing from the command.",
         )
 
-    results = product_repo.search_products(db, business_id=business_id, query=query, limit=10)
+    clean_query = query.strip()
+    query_lower = clean_query.lower()
+
+    # 1. Exact match on SKU, Name, or GTIN
+    exact = db.query(Product).filter(
+        Product.business_id == business_id,
+        or_(
+            Product.name.ilike(clean_query),
+            Product.sku.ilike(clean_query),
+            Product.gtin == clean_query
+        )
+    ).first()
+    if exact:
+        return exact
+
+    # 2. Check PRODUCT_ALIAS knowledge documents
+    alias_docs = db.query(KnowledgeDocument).filter(
+        KnowledgeDocument.business_id == business_id,
+        KnowledgeDocument.document_type == "PRODUCT_ALIAS"
+    ).all()
+
+    for doc in alias_docs:
+        content_lower = doc.content.lower()
+        parts = content_lower.replace("—", ",").replace("-", ",").split(",")
+        alias_tokens = [p.strip() for p in parts if p.strip()]
+        if any(query_lower == t or query_lower in t.split() for t in alias_tokens):
+            target_name = (doc.metadata_json or {}).get("product_name")
+            if target_name:
+                matched = db.query(Product).filter(
+                    Product.business_id == business_id,
+                    Product.name.ilike(f"%{target_name}%")
+                ).first()
+                if matched:
+                    logger.info(f"[voice/preview] Resolved query '{query}' via PRODUCT_ALIAS to '{matched.name}'")
+                    return matched
+
+    # 3. Search catalog products
+    results = product_repo.search_products(db, business_id=business_id, query=clean_query, limit=10)
     
     if len(results) == 0:
         return PreviewResponse(
@@ -390,13 +448,16 @@ def _resolve_product(db: Session, business_id: str, query: str):
     if len(results) == 1:
         return results[0]
     
-    # Multiple results — check for exact name match first
-    query_lower = query.lower()
+    # Check for exact prefix or match
     for p in results:
         if p.name.lower() == query_lower:
             return p
-    
-    # Still ambiguous
+
+    exact_word_matches = [p for p in results if query_lower in [w.lower() for w in p.name.split()]]
+    if len(exact_word_matches) == 1:
+        return exact_word_matches[0]
+
+    # Still ambiguous — return candidate list for operator selection
     candidates = [{"id": p.id, "name": p.name, "sku": p.sku} for p in results[:5]]
     return PreviewResponse(
         status="AMBIGUOUS_PRODUCT",

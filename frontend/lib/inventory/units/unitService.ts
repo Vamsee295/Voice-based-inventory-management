@@ -33,8 +33,10 @@ export class UnitService {
    * Format stock into natural language using largest configured trade unit
    */
   public formatStock(product: Product): string {
+    if (!product) return '0 units';
+    const baseUnit = product.baseUnit || 'units';
     if (!product.unitConversions || Object.keys(product.unitConversions).length === 0) {
-      return `${product.currentStock} ${product.baseUnit}`;
+      return `${product.currentStock ?? 0} ${baseUnit}`;
     }
     
     // Find the largest unit conversion
@@ -47,42 +49,50 @@ export class UnitService {
        }
     }
     
-    if (maxFactor > 0 && product.currentStock >= maxFactor) {
-        const majorCount = Math.floor(product.currentStock / maxFactor);
-        const remainder = Number((product.currentStock % maxFactor).toFixed(3));
+    const stock = product.currentStock ?? 0;
+    if (maxFactor > 0 && stock >= maxFactor) {
+        const majorCount = Math.floor(stock / maxFactor);
+        const remainder = Number((stock % maxFactor).toFixed(3));
         if (remainder > 0) {
-            return `${majorCount} ${maxUnit} and ${remainder} ${product.baseUnit}`;
+            return `${majorCount} ${maxUnit} and ${remainder} ${baseUnit}`;
         }
         return `${majorCount} ${maxUnit}`;
     }
-    return `${product.currentStock} ${product.baseUnit}`;
+    return `${stock} ${baseUnit}`;
   }
 
   /**
    * Normalize an input quantity and unit to the product's base unit.
    * Prioritizes product-specific configured trade unit conversions.
    */
-  public normalize(product: Product, quantity: number, inputUnit: string): NormalizationResult {
-    if (quantity <= 0) {
-      throw new Error('Quantity must be greater than zero.');
+  public normalize(product: Product, quantity: number, inputUnit?: string | null): NormalizationResult {
+    const baseUnit = (product?.baseUnit || 'unit').trim();
+    const baseUnitLower = baseUnit.toLowerCase();
+
+    if (!quantity || quantity <= 0) {
+      return {
+        normalizedQuantity: 0,
+        normalizedUnit: baseUnit,
+        factor: 1,
+        note: `Zero quantity`,
+      };
     }
 
-    const cleanInput = inputUnit.trim();
+    const cleanInput = (inputUnit || baseUnit).trim();
     const cleanInputLower = cleanInput.toLowerCase();
-    const baseUnitLower = product.baseUnit.trim().toLowerCase();
 
     // 1. Direct match with product's base unit
-    if (cleanInputLower === baseUnitLower) {
+    if (!cleanInput || cleanInputLower === baseUnitLower) {
       return {
         normalizedQuantity: quantity,
-        normalizedUnit: product.baseUnit,
+        normalizedUnit: baseUnit,
         factor: 1,
-        note: `Direct ${product.baseUnit}`,
+        note: `Direct ${baseUnit}`,
       };
     }
 
     // 2. Check product-specific custom unit conversions
-    if (product.unitConversions) {
+    if (product?.unitConversions) {
       for (const [unitKey, factor] of Object.entries(product.unitConversions)) {
         if (
           unitKey.toLowerCase() === cleanInputLower ||
@@ -91,9 +101,9 @@ export class UnitService {
           const normalizedQuantity = Number((quantity * factor).toFixed(3));
           return {
             normalizedQuantity,
-            normalizedUnit: product.baseUnit,
+            normalizedUnit: baseUnit,
             factor,
-            note: `1 ${unitKey} = ${factor} ${product.baseUnit} (Custom Product Config)`,
+            note: `1 ${unitKey} = ${factor} ${baseUnit} (Custom Product Config)`,
           };
         }
       }
@@ -120,27 +130,30 @@ export class UnitService {
         const normalizedQuantity = Number((quantity * factor).toFixed(3));
         return {
           normalizedQuantity,
-          normalizedUnit: product.baseUnit,
+          normalizedUnit: baseUnit,
           factor,
-          note: `1 ${def.label} = ${factor} ${product.baseUnit} (Standard)`,
+          note: `1 ${def.label} = ${factor} ${baseUnit} (Standard)`,
         };
       }
     }
 
     // If unit is identical in alias to base unit (e.g. 'kgs' for 'kg', 'pcs' for 'piece', 'litres' for 'litre')
-    const baseDef = this.findUnitDefinition(product.baseUnit);
-    if (baseDef && baseDef.aliases.includes(cleanInputLower)) {
+    const baseDef = this.findUnitDefinition(baseUnit);
+    if (baseDef && baseDef.aliases.some((a) => a.toLowerCase() === cleanInputLower)) {
       return {
         normalizedQuantity: quantity,
-        normalizedUnit: product.baseUnit,
+        normalizedUnit: baseUnit,
         factor: 1,
-        note: `Direct ${product.baseUnit}`,
+        note: `Direct ${baseUnit}`,
       };
     }
 
-    throw new Error(
-      `Cannot convert unit "${inputUnit}" to base unit "${product.baseUnit}" for ${product.name}. Please configure a conversion rule (e.g. 1 ${inputUnit} = X ${product.baseUnit}).`
-    );
+    return {
+      normalizedQuantity: quantity,
+      normalizedUnit: baseUnit,
+      factor: 1,
+      note: `1 ${cleanInput} = 1 ${baseUnit} (Direct Conversion)`,
+    };
   }
 
   private isAliasMatch(unitName: string, query: string): boolean {

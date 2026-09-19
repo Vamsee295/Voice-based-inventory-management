@@ -77,8 +77,9 @@ def health_check():
     )
     return {
         "status": "ok",
-        "version": "2.0.0",
+        "version": "2.0.1",
         "groq_configured": groq_configured,
         "rag_enabled": settings.RAG_ENABLED,
         "environment": settings.ENVIRONMENT,
     }
+

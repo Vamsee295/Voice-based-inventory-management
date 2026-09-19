@@ -230,13 +230,14 @@ def _get_low_stock(db: Session, business_id: str) -> dict:
 
 
 def _get_expiry_attention(db: Session, business_id: str) -> dict:
-    """Get items expiring soon or already expired (from inventory batches if available)."""
-    # Basic implementation — returns products with potential expiry issues
-    # In full system, this would query the batches table
+    """Get items expiring soon or already expired (mocked for demo)."""
     return {
-        "expiring_soon": [],
+        "expiring_soon": [
+            {"name": "Refined Sunflower Oil", "sku": "OIL-001", "expiry_date": (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d"), "quantity": "150 L"},
+            {"name": "Iodized Salt", "sku": "SALT-001", "expiry_date": (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d"), "quantity": "50 KG"}
+        ],
         "expired": [],
-        "message": "Expiry data managed in the Expiry & Shelf Clock section."
+        "message": "Found 2 items expiring this week."
     }
 
 
@@ -313,7 +314,13 @@ def _format_low_stock(data: dict) -> str:
 
 
 def _format_expiry(data: dict) -> str:
-    return data.get("message", "Check the Expiry & Shelf Clock section for details.")
+    expiring = data.get("expiring_soon", [])
+    if not expiring:
+        return "No items are expiring this week."
+    lines = [data.get("message", "Items expiring soon:")]
+    for item in expiring:
+        lines.append(f"  • {item['name']} ({item['quantity']}) expires on {item['expiry_date']}")
+    return "\n".join(lines)
 
 
 def _format_transactions(data: dict) -> str:

@@ -67,18 +67,34 @@ export const voiceApi = {
     const formData = new FormData();
     formData.append('audio', blob, filename);
 
-    const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api';
-    const response = await fetch(`${API_BASE}/voice/transcribe`, {
-      method: 'POST',
-      body: formData,
-      // Don't set Content-Type — browser sets multipart/form-data with boundary
-    });
+    const API_BASE = 
+      (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_BASE_URL) ||
+      (typeof process !== 'undefined' && process.env?.VITE_API_BASE_URL) ||
+      'http://localhost:8000/api';
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: 'Upload failed' }));
-      throw new Error(err.detail || 'Audio upload failed');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+
+    try {
+      const response = await fetch(`${API_BASE}/voice/transcribe`, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: 'Upload failed' }));
+        throw new Error(err.detail || 'Audio upload failed');
+      }
+      return response.json();
+    } catch (err: any) {
+      clearTimeout(timer);
+      if (err.name === 'AbortError') {
+        throw new Error('Transcription timed out. Please try again.');
+      }
+      throw err;
     }
-    return response.json();
   },
 
   /**
@@ -92,10 +108,11 @@ export const voiceApi = {
    * Structured command → product resolution + TUNE + validation → preview.
    * No mutations happen here.
    */
-  previewCommand: async (command: StructuredCommand, operationId?: string): Promise<PreviewResponse> => {
+  previewCommand: async (command: StructuredCommand, operationId?: string, productId?: string): Promise<PreviewResponse> => {
     return apiClient.post<PreviewResponse>('/voice/preview', {
       command,
       operation_id: operationId,
+      product_id: productId,
     });
   },
 

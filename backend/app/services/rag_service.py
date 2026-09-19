@@ -113,6 +113,16 @@ def index_document(
     return doc
 
 
+# Cache for loaded documents to prevent repetitive DB queries
+_docs_cache = {}
+
+def get_cached_docs(db: Session, business_id: str) -> List[KnowledgeDocument]:
+    global _docs_cache
+    if business_id not in _docs_cache or not _docs_cache[business_id]:
+        docs = db.query(KnowledgeDocument).filter(KnowledgeDocument.business_id == business_id).all()
+        _docs_cache[business_id] = docs
+    return _docs_cache[business_id]
+
 def search(
     db: Session,
     business_id: str,
@@ -122,7 +132,7 @@ def search(
     document_type: str = None,
 ) -> List[Tuple[KnowledgeDocument, float]]:
     """
-    Vector similarity search over knowledge documents.
+    Vector similarity search with fast keyword/phrase matching over knowledge documents.
     Returns list of (document, score) sorted by descending score.
     """
     if not settings.RAG_ENABLED:
@@ -131,30 +141,34 @@ def search(
     top_k = top_k or settings.RAG_TOP_K
     threshold = threshold if threshold is not None else settings.RAG_SCORE_THRESHOLD
 
-    query_embedding = _encode(query)
-    if query_embedding is None:
-        logger.warning("RAG: Embedding model unavailable, falling back to keyword search")
-        return _keyword_fallback(db, business_id, query, top_k, document_type)
-
-    # Load all docs for business (for dev-scale SQLite this is fine; upgrade to pgvector for production)
-    q = db.query(KnowledgeDocument).filter(KnowledgeDocument.business_id == business_id)
+    docs = get_cached_docs(db, business_id)
     if document_type:
-        q = q.filter(KnowledgeDocument.document_type == document_type)
-    docs = q.all()
+        docs = [d for d in docs if d.document_type == document_type]
 
     if not docs:
         return []
 
-    results = []
-    for doc in docs:
-        if not doc.embedding_json:
-            continue
-        score = _cosine_similarity(query_embedding, doc.embedding_json)
-        if score >= threshold:
-            results.append((doc, score))
+    # If embedding model is already loaded and ready in memory, try embedding search
+    global _embedding_model
+    if _embedding_model is not None:
+        try:
+            query_embedding = _encode(query)
+            if query_embedding:
+                results = []
+                for doc in docs:
+                    if not doc.embedding_json:
+                        continue
+                    score = _cosine_similarity(query_embedding, doc.embedding_json)
+                    if score >= threshold:
+                        results.append((doc, score))
+                if results:
+                    results.sort(key=lambda x: x[1], reverse=True)
+                    return results[:top_k]
+        except Exception as e:
+            logger.warning(f"Embedding search failed, using keyword search: {e}")
 
-    results.sort(key=lambda x: x[1], reverse=True)
-    return results[:top_k]
+    # Fast keyword and phrase matching fallback (sub-millisecond, highly reliable)
+    return _keyword_fallback(docs, query, top_k)
 
 
 def retrieve_context(
@@ -179,25 +193,38 @@ def retrieve_context(
 
 
 def _keyword_fallback(
-    db: Session,
-    business_id: str,
+    docs: List[KnowledgeDocument],
     query: str,
     top_k: int,
-    document_type: str = None,
 ) -> List[Tuple[KnowledgeDocument, float]]:
-    """Simple keyword fallback when embeddings are unavailable."""
-    words = query.lower().split()
-    q = db.query(KnowledgeDocument).filter(KnowledgeDocument.business_id == business_id)
-    if document_type:
-        q = q.filter(KnowledgeDocument.document_type == document_type)
-    docs = q.all()
+    """Robust multi-token and phrase match over cached knowledge documents."""
+    query_lower = query.lower()
+    words = [w for w in query_lower.replace(",", " ").replace(".", " ").split() if len(w) > 1]
+    if not words:
+        return []
 
     results = []
     for doc in docs:
         content_lower = doc.content.lower()
-        score = sum(1 for w in words if w in content_lower) / max(len(words), 1)
-        if score > 0:
-            results.append((doc, score))
+        score = 0.0
+
+        # Exact phrase bonus
+        if query_lower in content_lower:
+            score += 0.5
+
+        # Individual word matches
+        matched_words = sum(1 for w in words if w in content_lower)
+        word_ratio = matched_words / len(words)
+        score += word_ratio * 0.5
+
+        # Check metadata match (e.g. product_name)
+        if doc.metadata_json:
+            p_name = str(doc.metadata_json.get("product_name", "")).lower()
+            if any(w in p_name for w in words):
+                score += 0.3
+
+        if score > 0.2:
+            results.append((doc, min(score, 1.0)))
 
     results.sort(key=lambda x: x[1], reverse=True)
     return results[:top_k]

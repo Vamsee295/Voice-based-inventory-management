@@ -135,8 +135,8 @@ export default function ScanPage() {
   let projectedStock = 0;
   
   if (resolvedProduct) {
-    const norm = unitService.normalize(resolvedProduct, quantity || 0, selectedUnit);
-    normalizedQty = norm.normalizedQuantity;
+    const norm = unitService.normalize(resolvedProduct, quantity || 0, selectedUnit || resolvedProduct.baseUnit);
+    normalizedQty = norm?.normalizedQuantity ?? 0;
     
     if (operationMode === 'STOCK_IN' || operationMode === 'PO_RECEIVE') {
       projectedStock = Number((resolvedProduct.currentStock + normalizedQty).toFixed(3));

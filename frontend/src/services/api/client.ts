@@ -1,4 +1,7 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api';
+const API_BASE_URL = 
+  (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_API_BASE_URL) ||
+  (typeof process !== 'undefined' && process.env?.VITE_API_BASE_URL) ||
+  'http://localhost:8000/api';
 
 export class ApiError extends Error {
   constructor(public status: number, public message: string, public data?: any) {
@@ -7,7 +10,7 @@ export class ApiError extends Error {
   }
 }
 
-async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+async function fetchApi<T>(endpoint: string, options: RequestInit & { timeout?: number } = {}): Promise<T> {
   const url = `${API_BASE_URL}${endpoint}`;
   
   const headers = {
@@ -15,33 +18,56 @@ async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise
     ...options.headers,
   };
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
+  const timeoutMs = options.timeout || 15000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!response.ok) {
-    let errorData;
-    try {
-      errorData = await response.json();
-    } catch {
-      // Ignore JSON parse errors for non-JSON responses
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers,
+      signal: options.signal || controller.signal,
+    });
+
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      let errorData;
+      try {
+        errorData = await response.json();
+      } catch {
+        // Ignore JSON parse errors for non-JSON responses
+      }
+      
+      throw new ApiError(
+        response.status,
+        errorData?.detail || response.statusText || 'An API error occurred',
+        errorData
+      );
     }
-    
+
+    // Handle 204 No Content or empty responses
+    const text = await response.text();
+    if (!text) {
+      return {} as T;
+    }
+
+    return JSON.parse(text) as T;
+  } catch (err: any) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') {
+      throw new ApiError(408, 'Voice intelligence request timed out. Please try again.');
+    }
+    if (err instanceof ApiError) {
+      throw err;
+    }
     throw new ApiError(
-      response.status,
-      errorData?.detail || response.statusText || 'An API error occurred',
-      errorData
+      503,
+      err.message?.includes('fetch') 
+        ? 'Could not connect to VoiceMate backend server. Please check your network or server status.'
+        : err.message || 'Network request failed'
     );
   }
-
-  // Handle 204 No Content or empty responses
-  const text = await response.text();
-  if (!text) {
-    return {} as T;
-  }
-
-  return JSON.parse(text) as T;
 }
 
 export const apiClient = {

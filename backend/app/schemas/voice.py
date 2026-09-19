@@ -44,6 +44,7 @@ class StructuredCommand(BaseModel):
 class PreviewRequest(BaseModel):
     command: StructuredCommand
     operation_id: Optional[str] = None  # Client-supplied idempotency key
+    product_id: Optional[str] = None  # Explicit product ID if selected by user
 
 
 class ProductSummary(BaseModel):

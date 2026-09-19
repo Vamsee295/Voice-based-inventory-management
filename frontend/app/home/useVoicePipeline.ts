@@ -3,10 +3,6 @@
 import { useState, useRef, useCallback } from 'react';
 import { voiceApi, StructuredCommand, PreviewResponse, ConfirmResponse } from '../../src/services/api/voiceApi';
 
-/**
- * Voice pipeline states — every state maps to a real backend operation.
- * NEVER shows fake states.
- */
 export type VoiceState =
   | 'IDLE'
   | 'RECORDING'
@@ -21,255 +17,234 @@ export type VoiceState =
   | 'ERROR';
 
 export interface VoicePipelineResult {
-  // Input
-  transcript: string;
-  // LLM interpretation
-  command: StructuredCommand | null;
-  // Backend preview
-  preview: PreviewResponse | null;
-  // Committed transaction
-  confirmed: ConfirmResponse | null;
-  // Error
-  errorMessage: string | null;
+  transcript?: string;
+  errorMessage?: string;
+  command?: StructuredCommand;
+  preview?: PreviewResponse;
+  confirmed?: ConfirmResponse;
 }
 
 export function useVoicePipeline() {
   const [state, setState] = useState<VoiceState>('IDLE');
-  const [result, setResult] = useState<VoicePipelineResult>({
-    transcript: '',
-    command: null,
-    preview: null,
-    confirmed: null,
-    errorMessage: null,
-  });
+  const [result, setResult] = useState<VoicePipelineResult>({});
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  const streamRef = useRef<MediaStream | null>(null);
 
-  // ---------------------------------------------------------------------------
-  // Reset to idle
-  // ---------------------------------------------------------------------------
+  const checkMicSupport = useCallback((): boolean => {
+    if (typeof window === 'undefined') return false;
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  }, []);
+
   const reset = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
     setState('IDLE');
-    setResult({ transcript: '', command: null, preview: null, confirmed: null, errorMessage: null });
+    setResult({});
   }, []);
 
-  // ---------------------------------------------------------------------------
-  // Error handler
-  // ---------------------------------------------------------------------------
-  const setError = useCallback((message: string) => {
-    setState('ERROR');
-    setResult(prev => ({ ...prev, errorMessage: message }));
-  }, []);
-
-  // ---------------------------------------------------------------------------
-  // CORE PIPELINE: transcript → interpret → preview
-  // ---------------------------------------------------------------------------
-  const runPipeline = useCallback(async (transcript: string) => {
-    if (!transcript.trim()) {
-      setError('No speech detected. Please try again.');
-      return;
-    }
-
-    // Update transcript in state
-    setResult(prev => ({ ...prev, transcript, errorMessage: null }));
-
-    // STEP 1: Interpret (RAG + Groq LLM)
-    setState('UNDERSTANDING');
-    let command: StructuredCommand;
+  const processPipeline = useCallback(async (transcriptText: string) => {
     try {
-      command = await voiceApi.interpretCommand(transcript);
-      setResult(prev => ({ ...prev, command }));
-    } catch (err: any) {
-      if (err.message?.includes('503') || err.message?.includes('unavailable')) {
-        setError('AI command understanding is temporarily unavailable. Check your Groq API key.');
-      } else {
-        setError(`Failed to understand command: ${err.message || 'Unknown error'}`);
+      setState('UNDERSTANDING');
+      const command = await voiceApi.interpretCommand(transcriptText);
+
+      setResult((prev) => ({ ...prev, command }));
+
+      if (command.intent === 'UNKNOWN' && !command.product_query) {
+        setState('ERROR');
+        setResult((prev) => ({
+          ...prev,
+          errorMessage: command.clarification_reason || 'Could not understand the command. Please try speaking or typing clearly.',
+        }));
+        return;
       }
-      return;
-    }
 
-    // STEP 2: Preview (product resolution + TUNE + validation)
-    setState('VERIFYING');
-    try {
+      setState('VERIFYING');
       const preview = await voiceApi.previewCommand(command);
-      setResult(prev => ({ ...prev, preview }));
+
+      setResult((prev) => ({ ...prev, preview }));
       setState('READY');
     } catch (err: any) {
-      setError(`Preview failed: ${err.message || 'Unknown error'}`);
+      console.error('Voice pipeline error:', err);
+      setState('ERROR');
+      setResult((prev) => ({
+        ...prev,
+        errorMessage: err.message || 'An error occurred while processing your command.',
+      }));
     }
-  }, [setError]);
+  }, []);
 
-  // ---------------------------------------------------------------------------
-  // START VOICE RECORDING (MediaRecorder)
-  // ---------------------------------------------------------------------------
+  const selectCandidate = useCallback(
+    async (candidate: { id: string; name: string; sku: string }) => {
+      if (!result.command) return;
+      try {
+        setState('VERIFYING');
+        const preview = await voiceApi.previewCommand(
+          result.command,
+          result.preview?.operation_id,
+          candidate.id
+        );
+        setResult((prev) => ({ ...prev, preview }));
+        setState('READY');
+      } catch (err: any) {
+        console.error('Candidate selection error:', err);
+        setState('ERROR');
+        setResult((prev) => ({
+          ...prev,
+          errorMessage: err.message || 'Failed to resolve selected product.',
+        }));
+      }
+    },
+    [result.command, result.preview?.operation_id]
+  );
+
+  const processTypedCommand = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      setResult({ transcript: trimmed });
+      await processPipeline(trimmed);
+    },
+    [processPipeline]
+  );
+
   const startListening = useCallback(async () => {
-    if (state === 'RECORDING') return;
-    reset();
-    setState('RECORDING');
+    if (!checkMicSupport()) {
+      setState('ERROR');
+      setResult({ errorMessage: 'Microphone is not supported in this browser.' });
+      return;
+    }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: 16000,
-        }
-      });
-      streamRef.current = stream;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       audioChunksRef.current = [];
 
-      // Detect best supported MIME type
-      const mimeType = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/ogg;codecs=opus',
-        'audio/ogg',
-        'audio/mp4',
-      ].find(type => MediaRecorder.isTypeSupported(type)) || '';
+      let mimeType = 'audio/webm';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        } else if (MediaRecorder.isTypeSupported('audio/ogg')) {
+          mimeType = 'audio/ogg';
+        }
+      }
 
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+      const recorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = recorder;
 
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
         }
       };
 
       recorder.onstop = async () => {
-        // Stop all tracks
-        stream.getTracks().forEach(track => track.stop());
+        // Stop all audio tracks
+        stream.getTracks().forEach((track) => track.stop());
 
-        const audioBlob = new Blob(audioChunksRef.current, {
-          type: mimeType || 'audio/webm',
-        });
-
-        if (audioBlob.size < 100) {
-          setError('Recording too short. Please speak clearly and try again.');
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+        if (audioBlob.size === 0) {
+          setState('ERROR');
+          setResult({ errorMessage: 'No audio captured. Please try speaking again.' });
           return;
         }
 
-        // STEP 1: Upload to backend → Groq Whisper
-        setState('UPLOADING');
         try {
-          setState('TRANSCRIBING');
-          const ext = (mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'm4a' : 'webm');
-          const transcription = await voiceApi.transcribeAudio(audioBlob, `recording.${ext}`);
-          
-          if (!transcription.text) {
-            setError('No speech detected in the recording. Please try again.');
+          setState('UPLOADING');
+          const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+          const transcribeRes = await voiceApi.transcribeAudio(audioBlob, `recording.${ext}`);
+
+          if (!transcribeRes.text || !transcribeRes.text.trim()) {
+            setState('ERROR');
+            setResult({ errorMessage: 'No speech was detected. Please try speaking again.' });
             return;
           }
 
-          // Run full pipeline with transcript
-          await runPipeline(transcription.text);
+          setResult({ transcript: transcribeRes.text });
+          await processPipeline(transcribeRes.text);
         } catch (err: any) {
-          if (err.message?.includes('MIC_PERMISSION')) {
-            setError('Microphone permission denied. Please allow microphone access.');
-          } else if (err.message?.includes('503') || err.message?.includes('unavailable')) {
-            setError('Voice transcription is temporarily unavailable. Please type your command instead.');
-          } else {
-            setError(`Transcription failed: ${err.message || 'Unknown error'}`);
-          }
+          console.error('Transcription error:', err);
+          setState('ERROR');
+          setResult({
+            errorMessage: err.message || 'Failed to transcribe audio. Please try again or type your command.',
+          });
         }
       };
 
-      recorder.onerror = (event) => {
-        setError('Recording failed. Please check your microphone and try again.');
-      };
-
-      recorder.start(250); // Collect in 250ms chunks
+      recorder.start();
+      setState('RECORDING');
     } catch (err: any) {
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setError('Microphone access denied. Please allow microphone permissions in your browser settings.');
-      } else if (err.name === 'NotFoundError') {
-        setError('No microphone found. Please connect a microphone and try again.');
-      } else {
-        setError(`Could not access microphone: ${err.message || 'Unknown error'}`);
-      }
+      console.error('Mic access error:', err);
+      setState('ERROR');
+      setResult({
+        errorMessage: err.name === 'NotAllowedError'
+          ? 'Microphone permission denied. Please allow microphone access in your browser.'
+          : 'Could not access microphone: ' + (err.message || 'Unknown error'),
+      });
     }
-  }, [state, reset, setError, runPipeline]);
+  }, [checkMicSupport, processPipeline]);
 
-  // ---------------------------------------------------------------------------
-  // STOP RECORDING
-  // ---------------------------------------------------------------------------
   const stopListening = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-    }
   }, []);
 
-  // ---------------------------------------------------------------------------
-  // TYPED COMMAND (same pipeline as voice)
-  // ---------------------------------------------------------------------------
-  const processTypedCommand = useCallback(async (text: string) => {
-    reset();
-    setResult(prev => ({ ...prev, transcript: text }));
-    await runPipeline(text);
-  }, [reset, runPipeline]);
-
-  // ---------------------------------------------------------------------------
-  // CONFIRM & APPLY (the ONLY mutation)
-  // ---------------------------------------------------------------------------
   const confirmAndApply = useCallback(async () => {
-    const { preview } = result;
-    if (!preview || preview.status !== 'READY' || !preview.product || preview.normalized_quantity === undefined) {
-      setError('Cannot confirm — no valid preview available.');
+    if (!result.preview || !result.preview.product || result.preview.status !== 'READY') {
       return;
     }
 
-    setState('COMMITTING');
     try {
+      setState('COMMITTING');
       const confirmed = await voiceApi.confirmCommand({
-        operation_id: preview.operation_id,
-        product_id: preview.product.id,
-        quantity_delta: preview.normalized_quantity!,
+        operation_id: result.preview.operation_id,
+        product_id: result.preview.product.id,
+        quantity_delta: result.preview.normalized_quantity || 0,
         source: 'VOICE',
       });
 
-      setResult(prev => ({ ...prev, confirmed }));
+      setResult((prev) => ({ ...prev, confirmed }));
       setState('COMMITTED');
-
-      // Speak result (browser TTS — EN/Telugu not supported by Groq TTS)
-      if ('speechSynthesis' in window && confirmed.message) {
-        const utterance = new SpeechSynthesisUtterance(confirmed.message);
-        utterance.lang = 'en-US';
-        utterance.rate = 0.9;
-        window.speechSynthesis.speak(utterance);
-      }
     } catch (err: any) {
-      setError(`Transaction failed: ${err.message || 'Unknown error'}`);
+      console.error('Confirm error:', err);
+      setState('ERROR');
+      setResult((prev) => ({
+        ...prev,
+        errorMessage: err.message || 'Failed to apply transaction to inventory.',
+      }));
     }
-  }, [result, setError]);
+  }, [result.preview]);
 
-  // ---------------------------------------------------------------------------
-  // Check mic support
-  // ---------------------------------------------------------------------------
-  const checkMicSupport = useCallback((): boolean => {
-    try {
-      return typeof MediaRecorder !== 'undefined' && !!navigator.mediaDevices;
-    } catch {
-      return false;
-    }
-  }, []);
+  const isRecording = state === 'RECORDING';
+  const isProcessing = [
+    'UPLOADING',
+    'TRANSCRIBING',
+    'UNDERSTANDING',
+    'RETRIEVING_CONTEXT',
+    'VERIFYING',
+    'COMMITTING',
+  ].includes(state);
+  const isReady = state === 'READY';
+  const isCommitted = state === 'COMMITTED';
+  const isError = state === 'ERROR';
 
   return {
     state,
     result,
-    isRecording: state === 'RECORDING',
-    isProcessing: ['UPLOADING', 'TRANSCRIBING', 'UNDERSTANDING', 'RETRIEVING_CONTEXT', 'VERIFYING'].includes(state),
-    isReady: state === 'READY',
-    isCommitted: state === 'COMMITTED',
-    isError: state === 'ERROR',
+    isRecording,
+    isProcessing,
+    isReady,
+    isCommitted,
+    isError,
     checkMicSupport,
     startListening,
     stopListening,
     processTypedCommand,
+    selectCandidate,
     confirmAndApply,
     reset,
   };

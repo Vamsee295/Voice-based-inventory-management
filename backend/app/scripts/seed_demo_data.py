@@ -127,10 +127,26 @@ def seed_demo_data(db: Session):
         if existing:
             if existing.gtin != p_data.get("gtin"):
                 existing.gtin = p_data.get("gtin")
-                db.commit()
                 logger.info(f"Updated GTIN for {p_data['name']}")
-            else:
-                logger.info(f"Product {p_data['name']} already exists. Skipping.")
+            # Ensure trade units exist for this product
+            for tu_data in p_data["trade_units"]:
+                tu_exists = db.query(TradeUnit).filter(
+                    TradeUnit.business_id == MOCK_BUSINESS_ID,
+                    TradeUnit.product_id == existing.id,
+                    TradeUnit.name == tu_data["name"]
+                ).first()
+                if not tu_exists:
+                    tu = TradeUnit(
+                        id=str(uuid.uuid4()),
+                        business_id=MOCK_BUSINESS_ID,
+                        product_id=existing.id,
+                        name=tu_data["name"],
+                        base_unit=tu_data["base_unit"],
+                        conversion_factor=tu_data["conversion_factor"]
+                    )
+                    db.add(tu)
+                    logger.info(f"Added missing trade unit {tu_data['name']} ({tu_data['conversion_factor']} {tu_data['base_unit']}) for {existing.name}")
+            db.commit()
             continue
         
         # Create product

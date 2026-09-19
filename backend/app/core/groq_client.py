@@ -96,7 +96,19 @@ def _get_client() -> Optional[Groq]:
     if not settings.GROQ_API_KEY or settings.GROQ_API_KEY == "PASTE_YOUR_GROQ_API_KEY_HERE":
         logger.warning("GROQ_API_KEY not configured — AI features unavailable")
         return None
-    return Groq(api_key=settings.GROQ_API_KEY, base_url=settings.GROQ_BASE_URL)
+
+    # Groq SDK automatically appends /openai/v1 to requests
+    base_url = settings.GROQ_BASE_URL.rstrip("/")
+    if base_url.endswith("/openai/v1"):
+        base_url = base_url[:-len("/openai/v1")]
+    elif base_url.endswith("/openai"):
+        base_url = base_url[:-len("/openai")]
+
+    return Groq(
+        api_key=settings.GROQ_API_KEY,
+        base_url=base_url if base_url else "https://api.groq.com",
+        timeout=settings.GROQ_TIMEOUT_SECONDS,
+    )
 
 
 # ---------------------------------------------------------------------------
