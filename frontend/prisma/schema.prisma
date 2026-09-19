@@ -1,0 +1,133 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Business {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users        User[]
+  products     Product[]
+  transactions InventoryTransaction[]
+  batches      InventoryBatch[]
+  reorders     ReorderRecord[]
+  invoices     InvoiceDocument[]
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         String   @default("OPERATOR")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+}
+
+model Product {
+  id           String   @id @default(uuid())
+  name         String
+  sku          String   @unique
+  barcode      String?
+  description  String?
+  category     String   @default("General")
+  baseUnit     String
+  currentStock Float    @default(0)
+  reorderLevel Float    @default(0)
+  unitPrice    Float    @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+
+  transactions InventoryTransaction[]
+  batches      InventoryBatch[]
+  reorders     ReorderRecord[]
+}
+
+model InventoryTransaction {
+  id              String   @id @default(uuid())
+  type            String   // 'STOCK_IN', 'STOCK_OUT', 'ADJUSTMENT'
+  quantity        Float
+  unit            String
+  source          String   // 'VOICE', 'MANUAL', 'BARCODE', 'INVOICE'
+  operatorId      String
+  previousBalance Float
+  newBalance      Float
+  reference       String?
+  status          String   @default("COMMITTED") // 'COMMITTED', 'ROLLED_BACK'
+  idempotencyKey  String?  @unique // To prevent duplicate submissions
+  createdAt       DateTime @default(now())
+
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+}
+
+model InventoryBatch {
+  id           String    @id @default(uuid())
+  batchNumber  String
+  quantity     Float
+  receivedDate DateTime
+  expiryDate   DateTime?
+  status       String    @default("ACTIVE") // 'ACTIVE', 'DEPLETED', 'DISCARDED'
+  createdAt    DateTime  @default(now())
+
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+}
+
+model ReorderRecord {
+  id                String   @id @default(uuid())
+  suggestedQuantity Float
+  status            String   @default("PENDING") // 'PENDING', 'APPROVED', 'ORDERED'
+  createdAt         DateTime @default(now())
+
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+}
+
+model InvoiceDocument {
+  id            String   @id @default(uuid())
+  invoiceNumber String
+  supplierName  String
+  date          DateTime
+  totalAmount   Float    @default(0)
+  status        String   @default("PENDING") // 'PENDING', 'PROCESSED'
+  createdAt     DateTime @default(now())
+  
+  // JSON array of extracted items
+  extractedItems String
+
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+}
+
+model PendingOperation {
+  id           String   @id @default(uuid())
+  operationId  String   @unique
+  source       String
+  payload      String   // JSON string
+  status       String   @default("PENDING") // 'PENDING', 'SYNCING', 'SYNCED', 'FAILED'
+  retryCount   Int      @default(0)
+  businessId   String
+  createdAt    DateTime @default(now())
+}

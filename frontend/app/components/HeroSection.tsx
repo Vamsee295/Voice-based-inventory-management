@@ -36,9 +36,9 @@ export default function HeroSection() {
               Run your inventory by simply talking. VoiceMate turns everyday speech into verified inventory actions — without the forms, spreadsheets, and manual entry.
             </p>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 mb-8">
-              <button className="bg-[var(--primary)] text-white text-sm font-medium px-6 py-3 rounded hover:bg-[var(--primary-hover)] transition-colors text-center shadow-sm">
+              <a href="/home" className="inline-block bg-[var(--primary)] text-white text-sm font-medium px-6 py-3 rounded hover:bg-[var(--primary-hover)] transition-colors text-center shadow-sm">
                 Get Started
-              </button>
+              </a>
               <button className="bg-[var(--surface-container)] text-[var(--text-primary)] text-sm font-medium px-6 py-3 rounded hover:bg-[#E2E3E0] transition-colors text-center shadow-sm border border-[var(--border)]">
                 See How It Works
               </button>
