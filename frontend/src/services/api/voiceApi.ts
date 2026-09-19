@@ -64,6 +64,8 @@ export const voiceApi = {
    * Returns transcript text and detected language.
    */
   transcribeAudio: async (blob: Blob, filename: string = 'recording.webm'): Promise<TranscribeResponse> => {
+    console.log(`[VoiceApi] Upload started for ${filename} (size: ${(blob.size / 1024).toFixed(2)} KB, type: ${blob.type || 'unknown'})`);
+
     const formData = new FormData();
     formData.append('audio', blob, filename);
 
@@ -83,8 +85,16 @@ export const voiceApi = {
       });
       clearTimeout(timer);
 
+      console.log(`[VoiceApi] Upload response status: ${response.status} ${response.statusText}`);
+
       if (!response.ok) {
-        const err = await response.json().catch(() => ({ detail: 'Upload failed' }));
+        let err;
+        try {
+          err = await response.json();
+        } catch {
+          err = { detail: 'Upload failed' };
+        }
+        console.error(`[VoiceApi] Transcription error response:`, err);
         throw new Error(err.detail || 'Audio upload failed');
       }
       return response.json();

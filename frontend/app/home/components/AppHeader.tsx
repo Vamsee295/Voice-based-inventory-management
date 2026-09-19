@@ -39,10 +39,15 @@ export default function AppHeader({ title, description, subtitle, statusBadge, i
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
     setIsProfileOpen(false);
-    // Add real sign out logic here later (e.g. fetch('/api/auth/logout', { method: 'POST' }))
-    router.push('/');
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
+    document.cookie = 'token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Max-Age=0;';
+    window.location.href = '/';
   };
 
   return (

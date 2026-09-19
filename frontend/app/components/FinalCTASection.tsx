@@ -13,12 +13,12 @@ export default function FinalCTASection() {
             Built for wholesale traders, kirana owners, and physical distributors who need ledger accuracy without typing. Let your inventory keep up with the way you work.
           </p>
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
-            <button className="bg-[var(--primary)] text-white text-sm font-semibold px-8 py-3.5 rounded hover:bg-[var(--primary-hover)] transition-colors text-center shadow-sm">
+            <a href="/home" className="bg-[var(--primary)] text-white text-sm font-semibold px-8 py-3.5 rounded hover:bg-[var(--primary-hover)] transition-colors text-center shadow-sm">
               Get Started
-            </button>
-            <button className="bg-[#1a1c23] text-white border border-[#2d313b] text-sm font-semibold px-8 py-3.5 rounded hover:bg-[#252830] transition-colors text-center">
+            </a>
+            <a href="#how-it-works" className="bg-[#1a1c23] text-white border border-[#2d313b] text-sm font-semibold px-8 py-3.5 rounded hover:bg-[#252830] transition-colors text-center">
               Explore VoiceMate
-            </button>
+            </a>
           </div>
         </div>
       </div>
