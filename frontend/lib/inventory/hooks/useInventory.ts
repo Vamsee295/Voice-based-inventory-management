@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CreateProductDTO, Product, UpdateProductDTO } from '../models/product';
 import { InventoryTransaction, TransactionSource } from '../models/transaction';
-import { productRepository } from '../repositories/productRepository';
-import { transactionRepository } from '../repositories/transactionRepository';
-import { inventoryService } from '../services/inventoryService';
+import { productsApi } from '../../../src/services/api/productsApi';
+import { transactionsApi } from '../../../src/services/api/transactionsApi';
+import { inventoryApi } from '../../../src/services/api/inventoryApi';
 
 export function useInventory() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -17,11 +17,11 @@ export function useInventory() {
   const loadData = async () => {
     try {
       const [allProds, allTx] = await Promise.all([
-        inventoryService.getAllProducts(),
-        inventoryService.getTransactions(undefined, 25),
+        productsApi.getAll(),
+        transactionsApi.getAll(),
       ]);
-      setProducts(allProds);
-      setTransactions(allTx);
+      setProducts(allProds as any);
+      setTransactions(allTx as any);
     } catch (e) {
       console.error('Failed to load inventory data:', e);
     } finally {
@@ -31,20 +31,7 @@ export function useInventory() {
 
   useEffect(() => {
     loadData();
-
-    // Subscribe to repository updates
-    const unsubProducts = productRepository.subscribe(() => {
-      inventoryService.getAllProducts().then(setProducts);
-    });
-
-    const unsubTransactions = transactionRepository.subscribe(() => {
-      inventoryService.getTransactions(undefined, 25).then(setTransactions);
-    });
-
-    return () => {
-      unsubProducts();
-      unsubTransactions();
-    };
+    // Subscriptions disabled during API migration
   }, []);
 
   // Filtered products list
@@ -98,15 +85,23 @@ export function useInventory() {
 
     // Domain Actions
     createProduct: async (dto: CreateProductDTO) => {
-      const res = await inventoryService.createProduct(dto);
-      if (res.success) await loadData();
-      return res;
+      try {
+        const product = await productsApi.create(dto);
+        await loadData();
+        return { success: true, data: product };
+      } catch (e: any) {
+        return { success: false, error: e.message };
+      }
     },
 
     updateProduct: async (id: string, dto: UpdateProductDTO) => {
-      const res = await inventoryService.updateProduct(id, dto);
-      if (res.success) await loadData();
-      return res;
+      try {
+        const product = await productsApi.update(id, dto);
+        await loadData();
+        return { success: true, data: product };
+      } catch (e: any) {
+        return { success: false, error: e.message };
+      }
     },
 
     stockIn: async (params: {
@@ -117,9 +112,17 @@ export function useInventory() {
       note?: string;
       createdBy?: string;
     }) => {
-      const res = await inventoryService.stockIn(params);
-      if (res.success) await loadData();
-      return res;
+      try {
+        const tx = await inventoryApi.adjustStock({
+          product_id: params.productId,
+          quantity: params.quantity,
+          source: params.source || 'MANUAL'
+        });
+        await loadData();
+        return { success: true, data: tx };
+      } catch (e: any) {
+        return { success: false, error: e.message };
+      }
     },
 
     stockOut: async (params: {
@@ -130,9 +133,17 @@ export function useInventory() {
       note?: string;
       createdBy?: string;
     }) => {
-      const res = await inventoryService.stockOut(params);
-      if (res.success) await loadData();
-      return res;
+      try {
+        const tx = await inventoryApi.adjustStock({
+          product_id: params.productId,
+          quantity: -params.quantity,
+          source: params.source || 'MANUAL'
+        });
+        await loadData();
+        return { success: true, data: tx };
+      } catch (e: any) {
+        return { success: false, error: e.message };
+      }
     },
 
     adjustStock: async (params: {
@@ -143,9 +154,10 @@ export function useInventory() {
       note?: string;
       createdBy?: string;
     }) => {
-      const res = await inventoryService.adjustStock(params);
-      if (res.success) await loadData();
-      return res;
+      // NOTE: Our simple API right now just takes relative quantity, not absolute.
+      // We would ideally have a dedicated endpoint or calculation here.
+      // For the sake of the MVP UI, we'll return an error or skip it.
+      return { success: false, error: 'Not implemented in new API yet' };
     },
   };
 }

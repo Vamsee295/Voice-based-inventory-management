@@ -142,7 +142,7 @@ export default function InventoryPage() {
         customUnitName: 'Bag',
         customUnitValue: '25',
       });
-      setActionSuccess(`Product "${res.data?.name}" created successfully!`);
+      setActionSuccess(`Product "${(res as any).data?.name}" created successfully!`);
       setTimeout(() => setActionSuccess(null), 4000);
     }
   };
@@ -197,7 +197,7 @@ export default function InventoryPage() {
       setActionError(res.error || 'Failed to stock in.');
     } else {
       closeActionModal();
-      setActionSuccess(`Stock added! New balance: ${res.data?.product.currentStock} ${selectedProduct.baseUnit}`);
+      setActionSuccess(`Stock added successfully!`);
       setTimeout(() => setActionSuccess(null), 4000);
     }
   };
@@ -226,7 +226,7 @@ export default function InventoryPage() {
       setActionError(res.error || 'Failed to stock out.');
     } else {
       closeActionModal();
-      setActionSuccess(`Stock removed! New balance: ${res.data?.product.currentStock} ${selectedProduct.baseUnit}`);
+      setActionSuccess(`Stock removed successfully!`);
       setTimeout(() => setActionSuccess(null), 4000);
     }
   };
@@ -253,7 +253,7 @@ export default function InventoryPage() {
       setActionError(res.error || 'Failed to adjust stock.');
     } else {
       closeActionModal();
-      setActionSuccess(`Stock adjusted to ${res.data?.product.currentStock} ${selectedProduct.baseUnit}!`);
+      setActionSuccess(`Stock adjusted successfully!`);
       setTimeout(() => setActionSuccess(null), 4000);
     }
   };
@@ -266,7 +266,7 @@ export default function InventoryPage() {
       {/* Main Container */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top Header */}
-        <AppHeader />
+        <AppHeader title="Inventory Master" description="Manage stock, units and product configuration" />
 
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto p-4 lg:p-6">

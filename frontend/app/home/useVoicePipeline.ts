@@ -1,160 +1,276 @@
-import { useState, useEffect } from 'react';
-import { SpeechAdapter } from '../../lib/voice/speechAdapter';
-import { IntentParser } from '../../lib/voice/intentParser';
-import { InventoryQueryService } from '../../lib/assistant/inventoryQueryService';
-import { inventoryService } from '../../lib/inventory/services/inventoryService';
-import { unitService } from '../../lib/inventory/units/unitService';
-import { DemoSession } from './demoData';
+'use client';
+
+import { useState, useRef, useCallback } from 'react';
+import { voiceApi, StructuredCommand, PreviewResponse, ConfirmResponse } from '../../src/services/api/voiceApi';
+
+/**
+ * Voice pipeline states — every state maps to a real backend operation.
+ * NEVER shows fake states.
+ */
+export type VoiceState =
+  | 'IDLE'
+  | 'RECORDING'
+  | 'UPLOADING'
+  | 'TRANSCRIBING'
+  | 'UNDERSTANDING'
+  | 'RETRIEVING_CONTEXT'
+  | 'VERIFYING'
+  | 'READY'
+  | 'COMMITTING'
+  | 'COMMITTED'
+  | 'ERROR';
+
+export interface VoicePipelineResult {
+  // Input
+  transcript: string;
+  // LLM interpretation
+  command: StructuredCommand | null;
+  // Backend preview
+  preview: PreviewResponse | null;
+  // Committed transaction
+  confirmed: ConfirmResponse | null;
+  // Error
+  errorMessage: string | null;
+}
 
 export function useVoicePipeline() {
-   const [isListening, setIsListening] = useState(false);
-   const [speechAdapter, setSpeechAdapter] = useState<SpeechAdapter | null>(null);
-   const [activeSession, setActiveSession] = useState<DemoSession | null>(null);
+  const [state, setState] = useState<VoiceState>('IDLE');
+  const [result, setResult] = useState<VoicePipelineResult>({
+    transcript: '',
+    command: null,
+    preview: null,
+    confirmed: null,
+    errorMessage: null,
+  });
 
-   useEffect(() => {
-     const adapter = new SpeechAdapter({
-        onStateChange: (state) => {
-           setIsListening(state === 'LISTENING' || state === 'TRANSCRIBING');
-        },
-        onResult: (transcript, isFinal) => {
-           if (isFinal) {
-              processTranscript(transcript);
-           }
-        },
-        onError: (err) => {
-           if (err === 'no-speech') {
-              console.log('Voice API: No speech detected (timeout).');
-           } else {
-              console.error('Speech error:', err);
-           }
-           setIsListening(false);
-        }
-     });
-     setSpeechAdapter(adapter);
-   }, []);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
 
-   const processTranscript = async (transcript: string) => {
-      const products = await inventoryService.getAllProducts();
-      const parseResult = IntentParser.parse(transcript, products);
-      
-      if (['STOCK_LOOKUP', 'LOW_STOCK_QUERY', 'REORDER_QUERY', 'STOCK_HISTORY', 'EXPIRY_QUERY'].includes(parseResult.intent)) {
-          const queryService = new InventoryQueryService(inventoryService, speechAdapter);
-          const answer = await queryService.handleQuery(parseResult.intent, parseResult.product);
-          
-          setActiveSession({
-             id: `query-${Date.now()}`,
-             tag: 'VOICE QUERY',
-             category: 'Inventory Query',
-             phrase: transcript,
-             language: 'Auto-detected',
-             confidence: 0.95,
-             intent: parseResult.intent as any,
-             intentLabel: parseResult.intent.replace(/_/g, ' '),
-             understoodProduct: parseResult.product?.name || 'All/Unknown',
-             understoodQuantity: 0,
-             understoodUnit: '',
-             resolvedSkuName: parseResult.product?.sku || '',
-             entities: [],
-             transactionPreview: {
-                operation: 'QUERY',
-                product: parseResult.product?.name || 'Inventory',
-                quantity: 'N/A',
-                current: 'N/A',
-                after: 'N/A',
-                source: 'Voice Assistant',
-                status: answer,
-             }
-          });
+  // ---------------------------------------------------------------------------
+  // Reset to idle
+  // ---------------------------------------------------------------------------
+  const reset = useCallback(() => {
+    setState('IDLE');
+    setResult({ transcript: '', command: null, preview: null, confirmed: null, errorMessage: null });
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Error handler
+  // ---------------------------------------------------------------------------
+  const setError = useCallback((message: string) => {
+    setState('ERROR');
+    setResult(prev => ({ ...prev, errorMessage: message }));
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // CORE PIPELINE: transcript → interpret → preview
+  // ---------------------------------------------------------------------------
+  const runPipeline = useCallback(async (transcript: string) => {
+    if (!transcript.trim()) {
+      setError('No speech detected. Please try again.');
+      return;
+    }
+
+    // Update transcript in state
+    setResult(prev => ({ ...prev, transcript, errorMessage: null }));
+
+    // STEP 1: Interpret (RAG + Groq LLM)
+    setState('UNDERSTANDING');
+    let command: StructuredCommand;
+    try {
+      command = await voiceApi.interpretCommand(transcript);
+      setResult(prev => ({ ...prev, command }));
+    } catch (err: any) {
+      if (err.message?.includes('503') || err.message?.includes('unavailable')) {
+        setError('AI command understanding is temporarily unavailable. Check your Groq API key.');
       } else {
-          if (parseResult.error) {
-              setActiveSession({
-                  id: `err-${Date.now()}`,
-                  tag: 'ERROR',
-                  category: 'Error',
-                  phrase: transcript,
-                  language: 'Auto-detected',
-                  confidence: 0.95,
-                  intent: parseResult.intent as any,
-                  intentLabel: 'ERROR',
-                  understoodProduct: parseResult.product?.name || 'Unknown',
-                  understoodQuantity: parseResult.quantity || 0,
-                  understoodUnit: parseResult.unit || '',
-                  resolvedSkuName: '',
-                  entities: [],
-                  transactionPreview: {
-                      operation: 'ERROR',
-                      product: 'N/A',
-                      quantity: 'N/A',
-                      current: 'N/A',
-                      after: 'N/A',
-                      source: 'Voice Console',
-                      status: `Validation Error: ${parseResult.error}`
-                  }
-              });
-          } else if (parseResult.product && parseResult.quantity && parseResult.unit) {
-              const p = parseResult.product;
-              const norm = unitService.normalize(p, parseResult.quantity, parseResult.unit);
-              const isOut = parseResult.intent === 'STOCK_OUT';
-              
-              const currentStock = p.currentStock;
-              const delta = norm.normalizedQuantity;
-              const newStock = isOut ? currentStock - delta : currentStock + delta;
-              
-              const isOverdraft = isOut && newStock < 0;
-              
-              setActiveSession({
-                  id: `tx-${Date.now()}`,
-                  tag: 'TRANSACTION',
-                  category: isOut ? 'Outward' : 'Inward',
-                  phrase: transcript,
-                  language: 'Auto-detected',
-                  confidence: 0.98,
-                  intent: parseResult.intent as any,
-                  intentLabel: parseResult.intent.replace(/_/g, ' '),
-                  understoodProduct: p.name,
-                  understoodQuantity: parseResult.quantity,
-                  understoodUnit: parseResult.unit,
-                  resolvedSkuName: p.sku,
-                  entities: [{
-                      id: `ent-${Date.now()}`,
-                      product: p.name,
-                      sku: p.sku,
-                      quantity: parseResult.quantity,
-                      unit: parseResult.unit,
-                      normalized: `${norm.normalizedQuantity} ${norm.normalizedUnit}`,
-                      currentStock: `${currentStock} ${p.baseUnit}`,
-                      projectedStock: `${newStock} ${p.baseUnit}`,
-                      status: isOverdraft ? 'Flagged' : 'Validated',
-                      deltaValue: isOut ? -delta : delta,
-                      deltaDisplay: isOut ? `-${delta} ${norm.normalizedUnit}` : `+${delta} ${norm.normalizedUnit}`,
-                      unitConversionNote: norm.note || undefined,
-                  }],
-                  transactionPreview: {
-                      operation: parseResult.intent.replace('_', ' '),
-                      product: p.name,
-                      quantity: isOut ? `-${delta} ${norm.normalizedUnit}` : `+${delta} ${norm.normalizedUnit}`,
-                      current: `${currentStock} ${p.baseUnit}`,
-                      after: `${newStock} ${p.baseUnit}`,
-                      source: 'Voice Console',
-                      status: isOverdraft ? 'INSUFFICIENT_STOCK' : 'Ready for confirmation',
-                  }
-              });
-          }
+        setError(`Failed to understand command: ${err.message || 'Unknown error'}`);
       }
-   };
+      return;
+    }
 
-   return {
-      isListening,
-      activeSession,
-      setActiveSession,
-      processTranscript,
-      startListening: () => {
-         if (speechAdapter && speechAdapter.checkSupport()) {
-             speechAdapter.startListening();
-         } else {
-             console.warn("Speech API not supported, listening cannot start");
-         }
-      },
-      stopListening: () => speechAdapter?.stopListening()
-   };
+    // STEP 2: Preview (product resolution + TUNE + validation)
+    setState('VERIFYING');
+    try {
+      const preview = await voiceApi.previewCommand(command);
+      setResult(prev => ({ ...prev, preview }));
+      setState('READY');
+    } catch (err: any) {
+      setError(`Preview failed: ${err.message || 'Unknown error'}`);
+    }
+  }, [setError]);
+
+  // ---------------------------------------------------------------------------
+  // START VOICE RECORDING (MediaRecorder)
+  // ---------------------------------------------------------------------------
+  const startListening = useCallback(async () => {
+    if (state === 'RECORDING') return;
+    reset();
+    setState('RECORDING');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 16000,
+        }
+      });
+      streamRef.current = stream;
+      audioChunksRef.current = [];
+
+      // Detect best supported MIME type
+      const mimeType = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+        'audio/mp4',
+      ].find(type => MediaRecorder.isTypeSupported(type)) || '';
+
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop());
+
+        const audioBlob = new Blob(audioChunksRef.current, {
+          type: mimeType || 'audio/webm',
+        });
+
+        if (audioBlob.size < 100) {
+          setError('Recording too short. Please speak clearly and try again.');
+          return;
+        }
+
+        // STEP 1: Upload to backend → Groq Whisper
+        setState('UPLOADING');
+        try {
+          setState('TRANSCRIBING');
+          const ext = (mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'm4a' : 'webm');
+          const transcription = await voiceApi.transcribeAudio(audioBlob, `recording.${ext}`);
+          
+          if (!transcription.text) {
+            setError('No speech detected in the recording. Please try again.');
+            return;
+          }
+
+          // Run full pipeline with transcript
+          await runPipeline(transcription.text);
+        } catch (err: any) {
+          if (err.message?.includes('MIC_PERMISSION')) {
+            setError('Microphone permission denied. Please allow microphone access.');
+          } else if (err.message?.includes('503') || err.message?.includes('unavailable')) {
+            setError('Voice transcription is temporarily unavailable. Please type your command instead.');
+          } else {
+            setError(`Transcription failed: ${err.message || 'Unknown error'}`);
+          }
+        }
+      };
+
+      recorder.onerror = (event) => {
+        setError('Recording failed. Please check your microphone and try again.');
+      };
+
+      recorder.start(250); // Collect in 250ms chunks
+    } catch (err: any) {
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setError('Microphone access denied. Please allow microphone permissions in your browser settings.');
+      } else if (err.name === 'NotFoundError') {
+        setError('No microphone found. Please connect a microphone and try again.');
+      } else {
+        setError(`Could not access microphone: ${err.message || 'Unknown error'}`);
+      }
+    }
+  }, [state, reset, setError, runPipeline]);
+
+  // ---------------------------------------------------------------------------
+  // STOP RECORDING
+  // ---------------------------------------------------------------------------
+  const stopListening = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // TYPED COMMAND (same pipeline as voice)
+  // ---------------------------------------------------------------------------
+  const processTypedCommand = useCallback(async (text: string) => {
+    reset();
+    setResult(prev => ({ ...prev, transcript: text }));
+    await runPipeline(text);
+  }, [reset, runPipeline]);
+
+  // ---------------------------------------------------------------------------
+  // CONFIRM & APPLY (the ONLY mutation)
+  // ---------------------------------------------------------------------------
+  const confirmAndApply = useCallback(async () => {
+    const { preview } = result;
+    if (!preview || preview.status !== 'READY' || !preview.product || preview.normalized_quantity === undefined) {
+      setError('Cannot confirm — no valid preview available.');
+      return;
+    }
+
+    setState('COMMITTING');
+    try {
+      const confirmed = await voiceApi.confirmCommand({
+        operation_id: preview.operation_id,
+        product_id: preview.product.id,
+        quantity_delta: preview.normalized_quantity!,
+        source: 'VOICE',
+      });
+
+      setResult(prev => ({ ...prev, confirmed }));
+      setState('COMMITTED');
+
+      // Speak result (browser TTS — EN/Telugu not supported by Groq TTS)
+      if ('speechSynthesis' in window && confirmed.message) {
+        const utterance = new SpeechSynthesisUtterance(confirmed.message);
+        utterance.lang = 'en-US';
+        utterance.rate = 0.9;
+        window.speechSynthesis.speak(utterance);
+      }
+    } catch (err: any) {
+      setError(`Transaction failed: ${err.message || 'Unknown error'}`);
+    }
+  }, [result, setError]);
+
+  // ---------------------------------------------------------------------------
+  // Check mic support
+  // ---------------------------------------------------------------------------
+  const checkMicSupport = useCallback((): boolean => {
+    try {
+      return typeof MediaRecorder !== 'undefined' && !!navigator.mediaDevices;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  return {
+    state,
+    result,
+    isRecording: state === 'RECORDING',
+    isProcessing: ['UPLOADING', 'TRANSCRIBING', 'UNDERSTANDING', 'RETRIEVING_CONTEXT', 'VERIFYING'].includes(state),
+    isReady: state === 'READY',
+    isCommitted: state === 'COMMITTED',
+    isError: state === 'ERROR',
+    checkMicSupport,
+    startListening,
+    stopListening,
+    processTypedCommand,
+    confirmAndApply,
+    reset,
+  };
 }

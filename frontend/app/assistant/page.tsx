@@ -3,321 +3,201 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from '../home/components/Sidebar';
 import AppHeader from '../home/components/AppHeader';
-import { ConversationalService, ConversationalResponse } from '../../lib/assistant/conversationalService';
-import { InventoryService } from '../../lib/inventory/services/inventoryService';
-import { LocalProductRepository } from '../../lib/inventory/repositories/productRepository';
-import { LocalTransactionRepository } from '../../lib/inventory/repositories/transactionRepository';
-import { unitService } from '../../lib/inventory/units/unitService';
-import { SpeechAdapter } from '../../lib/voice/speechAdapter';
+import { assistantApi } from '../../src/services/api/assistantApi';
+import { Mic, Send, Bot, AlertTriangle, Loader2, ArrowRight } from 'lucide-react';
 
 interface ChatMessage {
   id: string;
   sender: 'USER' | 'ASSISTANT';
   text: string;
-  widgetType?: ConversationalResponse['widgetType'];
-  dataPayload?: any;
+  intent?: string;
+  actionRequired?: boolean;
+  isError?: boolean;
   timestamp: Date;
 }
 
+const SUGGESTED_QUERIES = [
+  '"How much rice do we have?"',
+  '"Which items are running low?"',
+  '"What expires this week?"',
+  '"Show me today\'s stock movements"',
+];
+
 export default function AssistantPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [inputValue, setInputValue] = useState('');
-  const [isListening, setIsListening] = useState(false);
-  const [conversationalService, setConversationalService] = useState<ConversationalService | null>(null);
-  
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const speechAdapterRef = useRef<SpeechAdapter | null>(null);
-
-  useEffect(() => {
-    // Initialize services
-    const productRepo = new LocalProductRepository();
-    const txRepo = new LocalTransactionRepository();
-    const invService = new InventoryService(productRepo, txRepo);
-    
-    // Attempt to initialize speech, though it might need user interaction to unlock
-    try {
-      const config = {
-        onStateChange: () => {},
-        onResult: () => {},
-        onError: () => {}
-      };
-      const speech = new SpeechAdapter(config);
-      speechAdapterRef.current = speech;
-      setConversationalService(new ConversationalService(invService, speech));
-    } catch (e) {
-      console.warn('Speech synthesis not available yet.');
-      setConversationalService(new ConversationalService(invService, null));
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      id: 'msg-0',
+      sender: 'ASSISTANT',
+      text: 'Hello! I\'m the VoiceMate AI Assistant. I can answer questions about your inventory, low stock alerts, expiry, and recent transactions — using live data from your database.\n\nFor stock changes, please use the Voice Console.',
+      timestamp: new Date(),
     }
-
-    // Add initial greeting
-    setMessages([
-      {
-        id: 'msg-0',
-        sender: 'ASSISTANT',
-        text: 'Hello. I am the VoiceMate Conversational Assistant. How can I help you manage the inventory today?',
-        timestamp: new Date()
-      }
-    ]);
-  }, []);
+  ]);
+  const [inputValue, setInputValue] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const handleSubmit = async (text: string) => {
-    if (!text.trim() || !conversationalService) return;
+    if (!text.trim() || isLoading) return;
 
-    // Add user message
     const userMsg: ChatMessage = {
       id: `msg-${Date.now()}-u`,
       sender: 'USER',
-      text: text,
-      timestamp: new Date()
+      text: text.trim(),
+      timestamp: new Date(),
     };
-    
     setMessages(prev => [...prev, userMsg]);
     setInputValue('');
+    setIsLoading(true);
 
-    // Process query
     try {
-      const response = await conversationalService.handleQuery(text);
-      
+      const response = await assistantApi.queryAssistant(text.trim());
+
       const assistantMsg: ChatMessage = {
         id: `msg-${Date.now()}-a`,
         sender: 'ASSISTANT',
-        text: response.text,
-        widgetType: response.widgetType,
-        dataPayload: response.dataPayload,
-        timestamp: new Date()
+        text: response.reply,
+        intent: response.intent,
+        actionRequired: response.action_required,
+        timestamp: new Date(),
       };
-      
       setMessages(prev => [...prev, assistantMsg]);
-    } catch (err) {
-      console.error(err);
-      setMessages(prev => [...prev, {
-        id: `msg-${Date.now()}-err`,
-        sender: 'ASSISTANT',
-        text: 'Sorry, I encountered an error while trying to process that request.',
-        timestamp: new Date()
-      }]);
-    }
-  };
 
-  const handleVoiceToggle = () => {
-    if (!speechAdapterRef.current) return;
-    
-    if (isListening) {
-      setIsListening(false);
-      // In a real implementation, we'd stop the speech recognition here.
-      // For this prototype, the speechAdapter is mainly output. 
-      // We would use useVoicePipeline if we wanted full voice input again.
-      // But for simplicity in the assistant, we can rely on standard Web Speech API.
-    } else {
-      setIsListening(true);
-      
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.lang = 'en-IN';
-        
-        recognition.onresult = (event: any) => {
-          const transcript = event.results[0][0].transcript;
-          setIsListening(false);
-          handleSubmit(transcript);
-        };
-        
-        recognition.onerror = () => {
-          setIsListening(false);
-        };
-        
-        recognition.onend = () => {
-          setIsListening(false);
-        };
-        
-        recognition.start();
-      } else {
-        alert("Speech recognition is not supported in this browser.");
-        setIsListening(false);
+      // Optional TTS for spoken_text
+      if (response.spoken_text && 'speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(response.spoken_text);
+        utterance.lang = 'en-US';
+        utterance.rate = 0.9;
+        window.speechSynthesis.speak(utterance);
       }
+    } catch (err: any) {
+      const errorMsg: ChatMessage = {
+        id: `msg-${Date.now()}-e`,
+        sender: 'ASSISTANT',
+        text: err.message?.includes('503') || err.message?.includes('unavailable')
+          ? 'The AI assistant is temporarily unavailable. Please check your Groq API key configuration in backend/.env'
+          : `Sorry, I encountered an error: ${err.message || 'Unknown error'}`,
+        isError: true,
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMsg]);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const renderWidget = (msg: ChatMessage) => {
-    if (!msg.widgetType || !msg.dataPayload) return null;
-
-    switch (msg.widgetType) {
-      case 'STOCK':
-        const prod = msg.dataPayload.product;
-        return (
-          <div className="mt-3 bg-white border border-[#E5E5E0] rounded-lg p-4 shadow-sm w-full max-w-sm">
-            <p className="text-[10px] font-bold text-[#2457FF] uppercase tracking-wider mb-1">Product Stock Info</p>
-            <h4 className="text-[14px] font-bold text-[#111318]">{prod.name}</h4>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-[24px] font-bold text-[#111318] leading-none">{prod.currentStock}</span>
-              <span className="text-[12px] text-[#5F6673]">{prod.baseUnit}</span>
-            </div>
-          </div>
-        );
-      
-      case 'LOW_STOCK':
-      case 'REORDER':
-        const products = msg.dataPayload.products;
-        return (
-          <div className="mt-3 bg-white border border-[#E5E5E0] rounded-lg p-4 shadow-sm w-full max-w-md">
-            <p className="text-[10px] font-bold text-[#C2410C] uppercase tracking-wider mb-2">Attention Required</p>
-            <div className="space-y-2">
-              {products.map((p: any) => (
-                <div key={p.id} className="flex justify-between items-center bg-[#F9F9F8] p-2 rounded border border-[#E5E5E0]">
-                  <span className="text-[12px] font-bold text-[#111318]">{p.name}</span>
-                  <div className="text-right">
-                    <span className="text-[12px] font-bold text-[#C2410C]">{p.currentStock} {p.baseUnit}</span>
-                    <span className="text-[10px] text-[#5F6673] ml-2">(Min: {p.reorderLevel})</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-        
-      case 'TRANSACTIONS':
-        const txs = msg.dataPayload.transactions;
-        return (
-          <div className="mt-3 bg-white border border-[#E5E5E0] rounded-lg p-4 shadow-sm w-full max-w-md">
-            <p className="text-[10px] font-bold text-[#16794A] uppercase tracking-wider mb-2">Recent Ledger Entries</p>
-            <div className="space-y-2">
-              {txs.map((tx: any) => (
-                <div key={tx.id} className="flex justify-between items-center bg-[#F9F9F8] p-2 rounded border border-[#E5E5E0]">
-                  <div>
-                    <span className="text-[12px] font-bold text-[#111318] block">{tx.productName}</span>
-                    <span className="text-[10px] text-[#5F6673]">{new Date(tx.createdAt).toLocaleTimeString()} • {tx.source}</span>
-                  </div>
-                  <div className="text-right">
-                    <span className={`text-[12px] font-bold ${tx.type === 'STOCK_IN' ? 'text-[#16794A]' : 'text-[#C2410C]'}`}>
-                      {tx.type === 'STOCK_OUT' ? '-' : '+'}{tx.quantity} {tx.unit}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-        
-      case 'EXPIRY':
-        const summary = msg.dataPayload.summary;
-        return (
-          <div className="mt-3 bg-white border border-[#E5E5E0] rounded-lg p-4 shadow-sm w-full max-w-sm">
-            <p className="text-[10px] font-bold text-[#C2410C] uppercase tracking-wider mb-2">Shelf Clock Alerts</p>
-            <div className="flex gap-4">
-              <div className="bg-[#FEF2ED] text-[#C2410C] p-2 rounded text-center flex-1">
-                <p className="text-[18px] font-bold">{summary.expired}</p>
-                <p className="text-[10px] font-bold">EXPIRED</p>
-              </div>
-              <div className="bg-[#FFF4E5] text-[#9A3412] p-2 rounded text-center flex-1">
-                <p className="text-[18px] font-bold">{summary.expiringSoon}</p>
-                <p className="text-[10px] font-bold">EXPIRING SOON</p>
-              </div>
-            </div>
-          </div>
-        );
-        
-      default:
-        return null;
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit(inputValue);
     }
   };
 
   return (
-    <div className="flex h-screen bg-[#F7F7F4] font-sans text-[#111318] overflow-hidden">
+    <div className="flex h-screen bg-[var(--background)] font-sans text-[var(--text-primary)] overflow-hidden">
       <Sidebar />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <AppHeader customStatus="ASSISTANT ACTIVE" />
+        <AppHeader
+          title="Intelligence & Chat"
+          description="AI powered analytics and queries"
+        />
 
-        <main className="flex-1 min-w-0 flex flex-col p-0 overflow-hidden relative">
-          
-          {/* Chat History Area */}
-          <div className="flex-1 overflow-y-auto p-4 lg:p-6 bg-[#FAFAF8]">
-            <div className="max-w-3xl mx-auto space-y-6 pb-20">
-              
-              {messages.map(msg => (
-                <div key={msg.id} className={`flex ${msg.sender === 'USER' ? 'justify-end' : 'justify-start'}`}>
-                  {msg.sender === 'ASSISTANT' && (
-                    <div className="w-8 h-8 rounded-full bg-[#2457FF] flex items-center justify-center text-white mr-3 flex-shrink-0 mt-1 shadow-sm">
-                      <span className="material-symbols-outlined text-[16px]">smart_toy</span>
-                    </div>
-                  )}
-                  
-                  <div className={`max-w-[85%] ${msg.sender === 'USER' ? 'items-end' : 'items-start'}`}>
-                    <div 
-                      className={`px-4 py-3 rounded-2xl shadow-sm text-[14px] leading-relaxed ${
-                        msg.sender === 'USER' 
-                          ? 'bg-[#111318] text-white rounded-tr-sm' 
-                          : 'bg-white border border-[#E5E5E0] text-[#111318] rounded-tl-sm'
-                      }`}
-                    >
-                      {msg.text}
-                    </div>
-                    
-                    {renderWidget(msg)}
-                    
-                    <p className={`text-[10px] text-[#8E95A2] mt-1 ${msg.sender === 'USER' ? 'text-right' : 'text-left'}`}>
-                      {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </p>
-                  </div>
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-4 lg:px-8 py-6 space-y-4">
+          {messages.map(msg => (
+            <div
+              key={msg.id}
+              className={`flex gap-3 ${msg.sender === 'USER' ? 'justify-end' : 'justify-start'}`}
+            >
+              {msg.sender === 'ASSISTANT' && (
+                <div className="shrink-0 w-8 h-8 rounded-full bg-gradient-to-tr from-[var(--primary)] to-blue-400 flex items-center justify-center">
+                  <Bot className="w-4 h-4 text-white" />
                 </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
-          </div>
+              )}
 
-          {/* Input Bar */}
-          <div className="bg-white border-t border-[#E5E5E0] p-4">
-            <div className="max-w-3xl mx-auto">
-              <form 
-                onSubmit={(e) => { e.preventDefault(); handleSubmit(inputValue); }}
-                className="flex items-center gap-2 bg-[#F9F9F8] border border-[#E5E5E0] rounded-full p-1 pl-4 focus-within:border-[#2457FF] focus-within:ring-1 focus-within:ring-[#2457FF] transition-all shadow-sm"
+              <div className={`max-w-[75%] rounded-xl px-4 py-3 text-[13px] leading-relaxed whitespace-pre-wrap
+                ${msg.sender === 'USER'
+                  ? 'bg-[var(--primary)] text-white rounded-br-sm'
+                  : msg.isError
+                  ? 'bg-[var(--danger)]/10 border border-[var(--danger)]/20 text-[var(--text-primary)] rounded-bl-sm'
+                  : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-primary)] rounded-bl-sm'
+                }`}
               >
-                <input
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  placeholder="Ask about stock, expiry, transactions, or replenishment..."
-                  className="flex-1 bg-transparent border-none focus:outline-none text-[14px] text-[#111318]"
-                />
-                
-                <button
-                  type="button"
-                  onClick={handleVoiceToggle}
-                  className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                    isListening 
-                      ? 'bg-[#FEF2ED] text-[#C2410C] animate-pulse' 
-                      : 'bg-[#EEF2FF] text-[#2457FF] hover:bg-[#D0DDFF]'
-                  }`}
-                  title="Voice Input"
-                >
-                  <span className="material-symbols-outlined text-[20px]">mic</span>
-                </button>
-                
-                <button
-                  type="submit"
-                  disabled={!inputValue.trim()}
-                  className="w-10 h-10 rounded-full bg-[#111318] text-white flex items-center justify-center hover:bg-[#2A2F3A] disabled:opacity-50 disabled:hover:bg-[#111318] transition-colors"
-                  title="Send"
-                >
-                  <span className="material-symbols-outlined text-[18px]">arrow_upward</span>
-                </button>
-              </form>
-              <div className="flex gap-2 mt-3 overflow-x-auto pb-1 hide-scrollbar max-w-3xl mx-auto">
-                  <button onClick={() => handleSubmit("How much rice do we have?")} className="whitespace-nowrap px-3 py-1.5 bg-[#F4F4F1] border border-[#E5E5E0] hover:border-[#2457FF] text-[#5F6673] hover:text-[#2457FF] text-[11px] rounded-full transition-colors">"How much rice do we have?"</button>
-                  <button onClick={() => handleSubmit("Which items are running low?")} className="whitespace-nowrap px-3 py-1.5 bg-[#F4F4F1] border border-[#E5E5E0] hover:border-[#2457FF] text-[#5F6673] hover:text-[#2457FF] text-[11px] rounded-full transition-colors">"Which items are running low?"</button>
-                  <button onClick={() => handleSubmit("What expires this week?")} className="whitespace-nowrap px-3 py-1.5 bg-[#F4F4F1] border border-[#E5E5E0] hover:border-[#2457FF] text-[#5F6673] hover:text-[#2457FF] text-[11px] rounded-full transition-colors">"What expires this week?"</button>
-                  <button onClick={() => handleSubmit("Show me today's stock movements.")} className="whitespace-nowrap px-3 py-1.5 bg-[#F4F4F1] border border-[#E5E5E0] hover:border-[#2457FF] text-[#5F6673] hover:text-[#2457FF] text-[11px] rounded-full transition-colors">"Show me today's stock movements"</button>
+                {msg.isError && (
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <AlertTriangle className="w-4 h-4 text-[var(--danger)]" />
+                    <span className="text-[11px] font-semibold text-[var(--danger)]">ERROR</span>
+                  </div>
+                )}
+                {msg.actionRequired && (
+                  <div className="flex items-center gap-1.5 mb-2 text-[var(--warning)]">
+                    <ArrowRight className="w-3.5 h-3.5" />
+                    <span className="text-[11px] font-semibold">Use Voice Console for stock changes</span>
+                  </div>
+                )}
+                {msg.text}
+                <div className="text-[10px] mt-1.5 opacity-50 text-right" suppressHydrationWarning>
+                  {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </div>
               </div>
             </div>
-          </div>
+          ))}
 
-        </main>
+          {isLoading && (
+            <div className="flex gap-3 justify-start">
+              <div className="shrink-0 w-8 h-8 rounded-full bg-gradient-to-tr from-[var(--primary)] to-blue-400 flex items-center justify-center">
+                <Bot className="w-4 h-4 text-white" />
+              </div>
+              <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl rounded-bl-sm px-4 py-3 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-[var(--primary)]" />
+                <span className="text-[12px] text-[var(--text-muted)]">Thinking...</span>
+              </div>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Suggested queries */}
+        {messages.length <= 2 && (
+          <div className="px-4 lg:px-8 pb-3 flex flex-wrap gap-2">
+            {SUGGESTED_QUERIES.map(q => (
+              <button
+                key={q}
+                onClick={() => handleSubmit(q.replace(/"/g, ''))}
+                className="text-[12px] text-[var(--text-secondary)] border border-[var(--border)] px-3 py-1.5 rounded-full hover:bg-[var(--surface)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Input */}
+        <div className="border-t border-[var(--border)] bg-[var(--surface)] px-4 lg:px-8 py-4">
+          <div className="max-w-4xl mx-auto flex items-center gap-3">
+            <input
+              type="text"
+              value={inputValue}
+              onChange={e => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={isLoading}
+              placeholder="Ask about stock, expiry, transactions, or replenishment..."
+              className="flex-1 bg-[var(--surface-low)] border border-[var(--border)] rounded-xl px-4 py-3 text-[13px] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent disabled:opacity-50"
+            />
+            <button
+              onClick={() => handleSubmit(inputValue)}
+              disabled={!inputValue.trim() || isLoading}
+              className="w-10 h-10 bg-[var(--primary)] hover:bg-[var(--primary-hover)] disabled:opacity-40 text-white rounded-xl flex items-center justify-center transition-colors"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

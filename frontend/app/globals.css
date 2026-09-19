@@ -1,26 +1,26 @@
 @import "tailwindcss";
 
 :root {
-  --background: #F7F7F4;
-  --foreground: #111318;
+  /* VoiceMate Exact Master Prompt Palette */
+  --background: #F7F7F5;
+  --foreground: #16181D;
   
   --surface: #FFFFFF;
-  --surface-inset: #F0F0EB;
-  --surface-low: #F4F4F1;
-  --surface-container: #EEEEEB;
+  --surface-low: #F2F2EF;
   
-  --border: #E5E5E0;
-  --border-highest: #E2E3E0;
-  --divider: #ECECE8;
+  --border: #E6E6E1;
+  --divider: #EEEEEA;
   
-  --text-primary: #111318;
-  --text-secondary: #5F6673;
-  --text-tertiary: #8E95A2;
+  /* Text */
+  --text-primary: #16181D;
+  --text-secondary: #626873;
+  --text-muted: #8A909A;
   
+  /* Vibrant Accents */
   --primary: #2457FF;
-  --primary-hover: #003ED7;
-  --success: #16794A;
-  --warning: #B45309;
+  --primary-hover: #1D49DB;
+  --success: #17824D;
+  --warning: #B7791F;
   --danger: #C2410C;
 }
 
@@ -29,17 +29,14 @@
   --color-foreground: var(--foreground);
   
   --color-surface: var(--surface);
-  --color-surface-inset: var(--surface-inset);
   --color-surface-low: var(--surface-low);
-  --color-surface-container: var(--surface-container);
   
   --color-border: var(--border);
-  --color-border-highest: var(--border-highest);
   --color-divider: var(--divider);
   
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);
-  --color-text-tertiary: var(--text-tertiary);
+  --color-text-muted: var(--text-muted);
   
   --color-primary: var(--primary);
   --color-primary-hover: var(--primary-hover);
@@ -49,6 +46,11 @@
 
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Shadows for depth */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
 }
 
 body {
@@ -58,5 +60,19 @@ body {
 }
 
 ::-webkit-scrollbar {
-  display: none;
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }

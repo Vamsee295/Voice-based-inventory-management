@@ -1,36 +1,48 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# VoiceMate Frontend
+
+This is the frontend application for VoiceMate, a high-density, professional B2B SaaS application for inventory management.
+
+## Tech Stack
+- **Framework**: Next.js 14+ (App Router)
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS
+- **Components**: shadcn/ui, Radix UI primitives
+- **Icons**: Lucide React
+- **Voice / NLP**: Web Speech API (transcription) + Custom NLP intent parsing (TUNE)
+- **State Management**: React Hooks (Zustand/Context as needed)
 
 ## Getting Started
 
-First, run the development server:
-
+### 1. Install Dependencies
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
+### 2. Run the Development Server
+```bash
+npm run dev
+```
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 3. Build for Production
+```bash
+npm run build
+npm start
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Architecture
 
-## Learn More
+- `app/`: Next.js App Router pages and layouts.
+  - `app/home/`: Voice Console (Primary Pipeline).
+  - `app/inventory/`: Inventory Master (Product and Unit config).
+- `components/`: Shared UI components (headers, sidebars, modals).
+- `lib/`: Core application logic.
+  - `lib/voice/`: Speech adapters and intent parsing logic.
+  - `lib/inventory/`: TUNE unit conversion, services, and core models.
+- `src/services/api/`: Axios HTTP clients connecting to the FastAPI backend.
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Design Philosophy
+VoiceMate follows a clean SaaS design language, prioritizing visual excellence and density:
+- **One workspace → one primary task → supporting context → clear action.**
+- Focus on micro-interactions and strict state definitions (Review Required, Verified, Flagged).
+- A single source of truth for the inventory state.

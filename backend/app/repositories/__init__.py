@@ -1,0 +1,3 @@
+from app.repositories.product_repository import product_repo
+from app.repositories.inventory_repository import inventory_repo
+from app.repositories.transaction_repository import transaction_repo

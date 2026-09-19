@@ -341,11 +341,23 @@ export class InventoryService {
   }
 
   public async getProductById(id: string): Promise<Product | null> {
-    return this.prodRepo.getById(id);
+    const products = await this.getAllProducts();
+    return products.find(p => p.id === id) || null;
   }
 
   public async getAllProducts(): Promise<Product[]> {
-    return this.prodRepo.getAll();
+    try {
+      // dynamic import to avoid circular dependencies in old setup
+      const { productsApi } = await import('../../../src/services/api/productsApi');
+      const apiProds: any[] = await productsApi.getAll();
+      return apiProds.map(p => ({
+        ...p,
+        currentStock: p.current_stock ?? p.currentStock ?? 0,
+      })) as Product[];
+    } catch (e) {
+      console.warn("Falling back to local repository", e);
+      return this.prodRepo.getAll();
+    }
   }
 
   public async getTransactions(productId?: string, limit: number = 20): Promise<InventoryTransaction[]> {
